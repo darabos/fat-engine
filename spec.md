@@ -10,7 +10,7 @@ All physics is done by Rapier 0.36 (`rapier3d`), held in a single `PhysicsWorld`
 
 - The primitives of an asset are merged into one mesh, which is filled with a coarse cage of tetrahedral cells by `SoftBodyBuilder::volumetric_skinned`. Only the cage is simulated; the detailed mesh rides it as a *skin*. A mesh that isn't closed falls back to a shell of cells (`MeshEnclosure::Crust`).
 - The body collides through the boundary of its cage, so contacts are as coarse as the cells. Rapier handles gravity and all collisions.
-- The logic side controls a body by setting the shape-matching target pose of its whole-body cluster (cluster 0) to the logic position and rotation. The particles are pulled toward the rest shape at that pose.
+- The logic side controls a body by setting the shape-matching target pose of its whole-body cluster (cluster 0) to the logic position and rotation. Every particle is pulled toward the rest shape at that pose, stiffly enough that gravity and collisions deform the body without moving it: the logic side owns the location and orientation, physics owns the wobble.
 - After each step, the skin vertices are read back and each primitive's render mesh is refreshed from its own slice of them.
 
 Create a demo where a few assets are loaded from `assets/animals` and placed on a plane in this engine. Let the player move one of the bodies with the arrow keys.
