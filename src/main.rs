@@ -2,7 +2,7 @@ use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::gltf::{Gltf, GltfMesh};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
-use fat_engine::physics::{Physics, SoftBody, SoftBodyPlugin, spawn_soft_body};
+use fat_engine::physics::{Physics, SkinPart, SoftBody, SoftBodyPlugin, spawn_soft_body};
 
 #[derive(Clone, Debug)]
 struct LogicBody {
@@ -38,7 +38,7 @@ fn main() {
         .add_plugins(SoftBodyPlugin)
         .insert_resource(DemoBodies(vec![
             LogicBody {
-                asset_name: "animal-cat",
+                asset_name: "test",
                 position: Vec3::new(-2.0, 0.5, 0.0),
                 rotation: Quat::IDENTITY,
             },
@@ -113,7 +113,7 @@ fn spawn_loaded_bodies(
     mut body_assets: ResMut<BodyAssets>,
     gltfs: Res<Assets<Gltf>>,
     gltf_meshes: Res<Assets<GltfMesh>>,
-    meshes: Res<Assets<Mesh>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut physics: ResMut<Physics>,
 ) {
     let handles = body_assets.handles.clone();
@@ -124,80 +124,88 @@ fn spawn_loaded_bodies(
         let Some(gltf) = gltfs.get(handle) else {
             continue;
         };
-        if gltf.meshes.is_empty() {
-            body_assets.spawned[index] = true;
-            warn!("GLB body {} contains no meshes", bodies.0[index].asset_name);
-            continue;
-        }
-        let Some(gltf_mesh_handle) = gltf.meshes.first() else {
-            body_assets.spawned[index] = true;
-            warn!("GLB body {} contains no mesh", bodies.0[index].asset_name);
-            continue;
-        };
-        let Some(gltf_mesh) = gltf_meshes.get(gltf_mesh_handle) else {
-            continue;
-        };
-        let Some(primitive) = gltf_mesh.primitives.first() else {
-            body_assets.spawned[index] = true;
-            warn!(
-                "GLB body {} contains no primitive",
-                bodies.0[index].asset_name
-            );
-            continue;
-        };
-        let Some(source_mesh) = meshes.get(&primitive.mesh) else {
-            continue;
-        };
-        if source_mesh.primitive_topology() != PrimitiveTopology::TriangleList {
-            body_assets.spawned[index] = true;
-            warn!(
-                "GLB body {} first primitive is not a triangle list",
-                bodies.0[index].asset_name
-            );
-            continue;
-        }
-        let Some(positions) = extract_positions(source_mesh) else {
-            body_assets.spawned[index] = true;
-            warn!(
-                "GLB body {} has no Float32x3 positions",
-                bodies.0[index].asset_name
-            );
-            continue;
-        };
-        let Some(indices) = extract_indices(source_mesh) else {
-            body_assets.spawned[index] = true;
-            warn!(
-                "GLB body {} has no triangle indices",
-                bodies.0[index].asset_name
-            );
-            continue;
-        };
-        let render_mesh = primitive.mesh.clone();
         let body = &bodies.0[index];
+        // Every primitive must be loaded before any of them is turned into a render mesh.
+        if gltf
+            .meshes
+            .iter()
+            .filter_map(|handle| gltf_meshes.get(handle))
+            .flat_map(|gltf_mesh| &gltf_mesh.primitives)
+            .any(|primitive| meshes.get(&primitive.mesh).is_none())
+        {
+            continue;
+        }
         body_assets.spawned[index] = true;
-        let Some(soft_body) = spawn_soft_body(
-            &mut physics,
-            &positions,
-            &indices,
-            body.position,
-            body.rotation,
-            render_mesh.clone(),
-        ) else {
-            warn!("GLB body {} has an empty mesh", body.asset_name);
+
+        let mut parts = Vec::new();
+        let mut materials = Vec::new();
+        for gltf_mesh_handle in &gltf.meshes {
+            let Some(gltf_mesh) = gltf_meshes.get(gltf_mesh_handle) else {
+                continue;
+            };
+            for primitive in &gltf_mesh.primitives {
+                let Some(source_mesh) = meshes.get(&primitive.mesh) else {
+                    continue;
+                };
+                if source_mesh.primitive_topology() != PrimitiveTopology::TriangleList {
+                    warn!("{}: skipping a non-triangle primitive", body.asset_name);
+                    continue;
+                }
+                let (Some(positions), Some(indices)) =
+                    (extract_positions(source_mesh), extract_indices(source_mesh))
+                else {
+                    warn!(
+                        "{}: skipping a primitive without positions or indices",
+                        body.asset_name
+                    );
+                    continue;
+                };
+                // A private copy, so two bodies of the same asset deform independently.
+                let copy = source_mesh.clone();
+                let render_mesh = meshes.add(copy);
+                materials.push(primitive.material.clone().unwrap_or_default());
+                parts.push(SkinPart {
+                    mesh: render_mesh,
+                    positions,
+                    indices,
+                });
+            }
+        }
+        if parts.is_empty() {
+            warn!("GLB body {} has no usable primitive", body.asset_name);
+            continue;
+        }
+
+        let vertices: usize = parts.iter().map(|part| part.positions.len()).sum();
+        let triangles: usize = parts.iter().map(|part| part.indices.len() / 3).sum();
+        let render_meshes: Vec<Handle<Mesh>> = parts.iter().map(|part| part.mesh.clone()).collect();
+        let Some(soft_body) = spawn_soft_body(&mut physics, parts, body.position, body.rotation)
+        else {
+            warn!(
+                "GLB body {} could not be filled with cells",
+                body.asset_name
+            );
             continue;
         };
         info!(
-            "loaded mesh {}: vertices={} triangles={}",
+            "loaded {}: primitives={} vertices={} triangles={}",
             body.asset_name,
-            positions.len(),
-            indices.len() / 3
+            render_meshes.len(),
+            vertices,
+            triangles
         );
-        commands.spawn((
-            Mesh3d(render_mesh),
-            MeshMaterial3d(primitive.material.clone().unwrap_or_default()),
-            LogicFrame { index },
-            soft_body,
-        ));
+        commands
+            .spawn((
+                LogicFrame { index },
+                soft_body,
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .with_children(|parent| {
+                for (mesh, material) in render_meshes.into_iter().zip(materials) {
+                    parent.spawn((Mesh3d(mesh), MeshMaterial3d(material)));
+                }
+            });
     }
 }
 
