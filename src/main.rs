@@ -2,6 +2,8 @@ use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::gltf::{Gltf, GltfMesh};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+use bevy::render::view::RenderLayers;
+use fat_engine::fur::{BACK_FACE_LAYER, FurAssets, FurCamera, FurMaterial, FurMaterials, FurPlugin};
 use fat_engine::physics::{Physics, SkinPart, SoftBody, SoftBodyPlugin, spawn_soft_body};
 
 #[derive(Clone, Debug)]
@@ -35,7 +37,7 @@ fn main() {
             FrameTimeDiagnosticsPlugin::default(),
             LogDiagnosticsPlugin::default(),
         ))
-        .add_plugins(SoftBodyPlugin)
+        .add_plugins((SoftBodyPlugin, FurPlugin))
         .insert_resource(DemoBodies(vec![
             LogicBody {
                 asset_name: "animal-pig3",
@@ -75,6 +77,7 @@ fn setup(
 ) {
     commands.spawn((
         Camera3d::default(),
+        FurCamera,
         Transform::from_xyz(7.0, 5.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.spawn((
@@ -120,6 +123,9 @@ fn spawn_loaded_bodies(
     gltf_meshes: Res<Assets<GltfMesh>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut physics: ResMut<Physics>,
+    standard_materials: Res<Assets<StandardMaterial>>,
+    mut fur_materials: ResMut<Assets<FurMaterial>>,
+    fur: Res<FurAssets>,
 ) {
     let handles = body_assets.handles.clone();
     for (index, handle) in handles.iter().enumerate() {
@@ -199,15 +205,29 @@ fn spawn_loaded_bodies(
             vertices,
             triangles
         );
+        // Each body gets its own copies, as the materials carry the body's pose.
+        let materials: Vec<Handle<FurMaterial>> = materials
+            .iter()
+            .map(|handle| {
+                let base = standard_materials.get(handle).cloned().unwrap_or_default();
+                fur_materials.add(fur.material(base))
+            })
+            .collect();
         commands
             .spawn((
                 LogicFrame { index },
                 soft_body,
+                FurMaterials(materials.clone()),
                 Transform::default(),
                 Visibility::default(),
             ))
             .with_children(|parent| {
                 for (mesh, material) in render_meshes.into_iter().zip(materials) {
+                    parent.spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(fur.back_material.clone()),
+                        RenderLayers::layer(BACK_FACE_LAYER),
+                    ));
                     parent.spawn((Mesh3d(mesh), MeshMaterial3d(material)));
                 }
             });
