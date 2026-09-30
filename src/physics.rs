@@ -19,6 +19,18 @@ const CAGE_GUARD: f32 = 0.05;
 const CONTACT_SKIN: f32 = 0.01;
 /// How hard the body is held at the pose the logic side asks for, in Hz.
 const POSE_STIFFNESS: f32 = 5.0;
+/// Springs along the cell edges, in Hz. These are what resist squashing.
+const EDGE_STIFFNESS: f32 = 15.0;
+/// Per-cell volume constraints, in Hz.
+const VOLUME_STIFFNESS: f32 = 30.0;
+/// Damping ratio shared by the springs above; 1.0 is critical damping.
+const DAMPING_RATIO: f32 = 0.25;
+/// Settles wobble without slowing the body as a whole, per second. 0 leaves it ringing.
+const DEFORMATION_DAMPING: f32 = 0.25;
+/// Friction of the body's surface.
+const FRICTION: f32 = 0.8;
+/// Bounciness of the body's surface.
+const RESTITUTION: f32 = 0.5;
 
 #[derive(Resource, Default)]
 pub struct Physics(pub PhysicsWorld);
@@ -135,9 +147,18 @@ pub fn spawn_soft_body(
     let builder = build_cage(&vertices, &triangles, cell_size)?
         .shape_matching(true)
         .material(SoftBodyMaterial {
-            shape_matching_softness: SpringCoefficients::new(POSE_STIFFNESS, 1.0),
+            edge_softness: SpringCoefficients::new(EDGE_STIFFNESS, DAMPING_RATIO),
+            volume_softness: SpringCoefficients::new(VOLUME_STIFFNESS, DAMPING_RATIO),
+            shape_matching_softness: SpringCoefficients::new(POSE_STIFFNESS, DAMPING_RATIO),
+            deformation_damping: DEFORMATION_DAMPING,
             ..Default::default()
-        });
+        })
+        // Only the surface properties are kept; the shape is replaced by the body's own.
+        .surface_collider(
+            ColliderBuilder::ball(cell_size)
+                .friction(FRICTION)
+                .restitution(RESTITUTION),
+        );
     let handle = physics.0.insert_soft_body(builder);
 
     let body = &physics.0.soft_bodies[handle];

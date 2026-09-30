@@ -49,6 +49,11 @@ fn main() {
             },
             LogicBody {
                 asset_name: "test",
+                position: Vec3::new(1.0, 0.5, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            LogicBody {
+                asset_name: "test",
                 position: Vec3::new(2.0, 0.5, 0.0),
                 rotation: Quat::IDENTITY,
             },
