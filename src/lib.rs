@@ -1,2 +1,2 @@
-pub mod fur;
 pub mod physics;
+pub mod slime;
