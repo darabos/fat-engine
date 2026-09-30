@@ -16,24 +16,34 @@ const CAGE_SMOOTHING: u32 = 12;
 /// How close to the mesh the shrink-wrap may pull, as a fraction of the local cell size.
 const CAGE_GUARD: f32 = 0.05;
 /// Contact skin around the body, as a fraction of the cell size.
-const CONTACT_SKIN: f32 = 0.01;
+const CONTACT_SKIN: f32 = 0.1;
 /// How hard the body is held at the pose the logic side asks for, in Hz.
 const POSE_STIFFNESS: f32 = 5.0;
 /// Springs along the cell edges, in Hz. These are what resist squashing.
-const EDGE_STIFFNESS: f32 = 15.0;
+const EDGE_STIFFNESS: f32 = 10.0;
 /// Per-cell volume constraints, in Hz.
-const VOLUME_STIFFNESS: f32 = 30.0;
+const VOLUME_STIFFNESS: f32 = 10.0;
 /// Damping ratio shared by the springs above; 1.0 is critical damping.
 const DAMPING_RATIO: f32 = 0.25;
 /// Settles wobble without slowing the body as a whole, per second. 0 leaves it ringing.
 const DEFORMATION_DAMPING: f32 = 0.25;
 /// Friction of the body's surface.
-const FRICTION: f32 = 0.8;
+const FRICTION: f32 = 0.3;
 /// Bounciness of the body's surface.
-const RESTITUTION: f32 = 0.5;
+const RESTITUTION: f32 = 0.0;
+/// Stiffness of soft body contacts relative to rigid ones. Rapier's default is 4.0.
+const CONTACT_STIFFENING: f32 = 1.0;
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Physics(pub PhysicsWorld);
+
+impl Default for Physics {
+    fn default() -> Self {
+        let mut world = PhysicsWorld::default();
+        world.integration_parameters.soft_bodies.contact_stiffening = CONTACT_STIFFENING;
+        Self(world)
+    }
+}
 
 /// One render mesh of a body, with the geometry it contributes to the shared skin.
 pub struct SkinPart {
@@ -267,6 +277,57 @@ mod tests {
             apply_target(&mut physics.0, body);
             physics.0.step();
         }
+    }
+
+    /// Mean particle speed once the bodies have had time to settle.
+    fn residual_speed(physics: &mut Physics, bodies: &[SoftBody], steps: usize) -> f32 {
+        physics.0.integration_parameters.dt = 1.0 / 60.0;
+        let measure_from = steps * 4 / 5;
+        let mut speed = 0.0;
+        let mut samples = 0;
+        for step in 0..steps {
+            for body in bodies {
+                apply_target(&mut physics.0, body);
+            }
+            physics.0.step();
+            if step >= measure_from {
+                for body in bodies {
+                    let sb = &physics.0.soft_bodies[body.handle];
+                    speed += sb
+                        .particle_velocities()
+                        .map(|v| to_bevy(v).length())
+                        .sum::<f32>()
+                        / sb.num_particles() as f32;
+                    samples += 1;
+                }
+            }
+        }
+        speed / samples as f32
+    }
+
+    #[test]
+    fn bodies_pressed_together_settle_instead_of_vibrating() {
+        let mut physics = Physics::default();
+        physics.0.insert_collider(
+            ColliderBuilder::cuboid(10.0, 0.1, 10.0).translation(RVec::new(0.0, -0.1, 0.0)),
+            None,
+        );
+        // Two cubes overlapping by a fifth of their width, both held by the logic side.
+        let bodies: Vec<SoftBody> = [-0.4f32, 0.4]
+            .iter()
+            .map(|&x| {
+                spawn_soft_body(
+                    &mut physics,
+                    vec![cube()],
+                    Vec3::new(x, 0.5, 0.0),
+                    Quat::IDENTITY,
+                )
+                .expect("the cube fills with cells")
+            })
+            .collect();
+
+        let speed = residual_speed(&mut physics, &bodies, 300);
+        assert!(speed < 0.05, "the bodies keep moving at {speed}");
     }
 
     #[test]

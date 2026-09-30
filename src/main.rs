@@ -38,23 +38,23 @@ fn main() {
         .add_plugins(SoftBodyPlugin)
         .insert_resource(DemoBodies(vec![
             LogicBody {
-                asset_name: "test",
+                asset_name: "animal-pig3",
                 position: Vec3::new(-2.0, 0.5, 0.0),
                 rotation: Quat::IDENTITY,
             },
             LogicBody {
-                asset_name: "test",
+                asset_name: "animal-pig3",
                 position: Vec3::new(0.0, 0.5, 0.0),
                 rotation: Quat::IDENTITY,
             },
             LogicBody {
-                asset_name: "test",
-                position: Vec3::new(1.0, 0.5, 0.0),
+                asset_name: "animal-pig3",
+                position: Vec3::new(1.3, 0.5, 0.0),
                 rotation: Quat::IDENTITY,
             },
             LogicBody {
-                asset_name: "test",
-                position: Vec3::new(2.0, 0.5, 0.0),
+                asset_name: "animal-pig3",
+                position: Vec3::new(2.6, 0.5, 0.0),
                 rotation: Quat::IDENTITY,
             },
         ]))
