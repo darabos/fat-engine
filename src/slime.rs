@@ -1,15 +1,16 @@
 use crate::physics::SoftBody;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::pbr::{
-    ExtendedMaterial, MaterialExtension, MaterialPipeline, MaterialPipelineKey,
+    ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+    MaterialPipeline, MaterialPipelineKey,
 };
 use bevy::prelude::*;
 use bevy::render::camera::RenderTarget;
-use bevy::render::mesh::MeshVertexBufferLayoutRef;
+use bevy::render::mesh::{MeshVertexAttribute, MeshVertexBufferLayoutRef};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{
     AsBindGroup, Extent3d, Face, RenderPipelineDescriptor, ShaderRef, ShaderType,
-    SpecializedMeshPipelineError, TextureDimension, TextureFormat, TextureUsages,
+    SpecializedMeshPipelineError, TextureDimension, TextureFormat, TextureUsages, VertexFormat,
 };
 use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
@@ -17,11 +18,15 @@ use bevy::window::PrimaryWindow;
 /// Layer seen only by the back-face camera.
 pub const BACK_FACE_LAYER: usize = 1;
 
+/// Undeformed vertex positions, so the skin pattern sticks to the surface while the body wobbles.
+pub const ATTRIBUTE_REST_POSITION: MeshVertexAttribute =
+    MeshVertexAttribute::new("RestPosition", 988_540_917, VertexFormat::Float32x3);
+
 pub type SlimeMaterial = ExtendedMaterial<StandardMaterial, SlimeExtension>;
 
 #[derive(Clone, Copy, Debug, Reflect, ShaderType)]
 pub struct SlimeParams {
-    /// The pattern is laid out in body space so it stays put while the body moves.
+    /// Only its rotation is used, to turn rest-pose gradients into world space.
     pub body_from_world: Mat4,
     /// Distance between warts.
     pub wart_spacing: f32,
@@ -44,10 +49,10 @@ impl Default for SlimeParams {
     fn default() -> Self {
         Self {
             body_from_world: Mat4::IDENTITY,
-            wart_spacing: 0.06,
-            wart_height: 0.6,
+            wart_spacing: 0.1,
+            wart_height: -0.01,
             blotch_scale: 0.25,
-            blotch_darkness: 0.55,
+            blotch_darkness: 0.25,
             ripple_scale: 0.15,
             ripple_strength: 0.25,
             flow_speed: 0.03,
@@ -67,8 +72,26 @@ pub struct SlimeExtension {
 }
 
 impl MaterialExtension for SlimeExtension {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/slime.wgsl".into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         "shaders/slime.wgsl".into()
+    }
+
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        // Appended rather than rebuilt, so prepass and shadow pipelines keep their own locations.
+        let rest = layout
+            .0
+            .get_layout(&[ATTRIBUTE_REST_POSITION.at_shader_location(8)])?;
+        descriptor.vertex.buffers[0].attributes.extend(rest.attributes);
+        Ok(())
     }
 }
 

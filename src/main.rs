@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::view::RenderLayers;
 use fat_engine::slime::{
-    BACK_FACE_LAYER, SlimeAssets, SlimeCamera, SlimeMaterial, SlimeMaterials, SlimePlugin,
+    ATTRIBUTE_REST_POSITION, BACK_FACE_LAYER, SlimeAssets, SlimeCamera, SlimeMaterial, SlimeMaterials, SlimePlugin,
 };
 use fat_engine::physics::{Physics, SkinPart, SoftBody, SoftBodyPlugin, spawn_soft_body};
 
@@ -174,7 +174,11 @@ fn spawn_loaded_bodies(
                     continue;
                 };
                 // A private copy, so two bodies of the same asset deform independently.
-                let copy = source_mesh.clone();
+                let mut copy = source_mesh.clone();
+                copy.insert_attribute(
+                    ATTRIBUTE_REST_POSITION,
+                    positions.iter().map(|p| p.to_array()).collect::<Vec<_>>(),
+                );
                 let render_mesh = meshes.add(copy);
                 materials.push(primitive.material.clone().unwrap_or_default());
                 parts.push(SkinPart {

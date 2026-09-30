@@ -1,8 +1,55 @@
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
+    mesh_functions,
     mesh_view_bindings::{view, globals},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
+    view_transformations::position_world_to_clip,
+}
+
+// forward_io's Vertex and VertexOutput, plus the rest position.
+struct Vertex {
+    @builtin(instance_index) instance_index: u32,
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+#ifdef VERTEX_UVS_A
+    @location(2) uv: vec2<f32>,
+#endif
+#ifdef VERTEX_UVS_B
+    @location(3) uv_b: vec2<f32>,
+#endif
+#ifdef VERTEX_TANGENTS
+    @location(4) tangent: vec4<f32>,
+#endif
+#ifdef VERTEX_COLORS
+    @location(5) color: vec4<f32>,
+#endif
+    @location(8) rest_position: vec3<f32>,
+}
+
+struct SlimeVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) world_position: vec4<f32>,
+    @location(1) world_normal: vec3<f32>,
+#ifdef VERTEX_UVS_A
+    @location(2) uv: vec2<f32>,
+#endif
+#ifdef VERTEX_UVS_B
+    @location(3) uv_b: vec2<f32>,
+#endif
+#ifdef VERTEX_TANGENTS
+    @location(4) world_tangent: vec4<f32>,
+#endif
+#ifdef VERTEX_COLORS
+    @location(5) color: vec4<f32>,
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    @location(6) @interpolate(flat) instance_index: u32,
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    @location(7) @interpolate(flat) visibility_range_dither: i32,
+#endif
+    @location(8) rest_position: vec3<f32>,
 }
 
 struct SlimeParams {
@@ -68,13 +115,64 @@ fn bend(n: vec3<f32>, gradient: vec3<f32>) -> vec3<f32> {
     return normalize(n - (gradient - n * dot(gradient, n)));
 }
 
+@vertex
+fn vertex(vertex: Vertex) -> SlimeVertexOutput {
+    var out: SlimeVertexOutput;
+    let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
+    out.world_normal = mesh_functions::mesh_normal_local_to_world(vertex.normal, vertex.instance_index);
+    out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(vertex.position, 1.0));
+    out.position = position_world_to_clip(out.world_position.xyz);
+#ifdef VERTEX_UVS_A
+    out.uv = vertex.uv;
+#endif
+#ifdef VERTEX_UVS_B
+    out.uv_b = vertex.uv_b;
+#endif
+#ifdef VERTEX_TANGENTS
+    out.world_tangent = mesh_functions::mesh_tangent_local_to_world(world_from_local, vertex.tangent, vertex.instance_index);
+#endif
+#ifdef VERTEX_COLORS
+    out.color = vertex.color;
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    out.instance_index = vertex.instance_index;
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(vertex.instance_index, world_from_local[3]);
+#endif
+    out.rest_position = vertex.rest_position;
+    return out;
+}
+
 @fragment
-fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(slime_in: SlimeVertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    var in: VertexOutput;
+    in.position = slime_in.position;
+    in.world_position = slime_in.world_position;
+    in.world_normal = slime_in.world_normal;
+#ifdef VERTEX_UVS_A
+    in.uv = slime_in.uv;
+#endif
+#ifdef VERTEX_UVS_B
+    in.uv_b = slime_in.uv_b;
+#endif
+#ifdef VERTEX_TANGENTS
+    in.world_tangent = slime_in.world_tangent;
+#endif
+#ifdef VERTEX_COLORS
+    in.color = slime_in.color;
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    in.instance_index = slime_in.instance_index;
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    in.visibility_range_dither = slime_in.visibility_range_dither;
+#endif
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
     let m = slime.body_from_world;
-    let q = (m * in.world_position).xyz;
-    // Transposing the rotation takes body-space vectors back to world space.
+    let q = slime_in.rest_position;
+    // The rest pose shares the body's orientation, so its rotation takes pattern gradients to world space.
     let world_from_body = transpose(mat3x3(m[0].xyz, m[1].xyz, m[2].xyz));
 
     // Warts: a smooth dome around each Worley feature point.
