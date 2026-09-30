@@ -2,8 +2,7 @@ use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::gltf::{Gltf, GltfMesh};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
-use fat_engine::physics::{PerformanceTimings, SoftBody, SoftBodyMesh, SoftBodyPlugin};
-use std::time::Instant;
+use fat_engine::physics::{Physics, SoftBody, SoftBodyPlugin, spawn_soft_body};
 
 #[derive(Clone, Debug)]
 struct LogicBody {
@@ -57,14 +56,7 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (
-                spawn_loaded_bodies,
-                move_selected_frame,
-                sync_logic_frames,
-                sync_soft_body_mesh,
-                report_performance,
-            )
-                .chain(),
+            (spawn_loaded_bodies, move_selected_frame, sync_logic_frames).chain(),
         )
         .run();
 }
@@ -122,9 +114,8 @@ fn spawn_loaded_bodies(
     gltfs: Res<Assets<Gltf>>,
     gltf_meshes: Res<Assets<GltfMesh>>,
     meshes: Res<Assets<Mesh>>,
-    mut timings: ResMut<PerformanceTimings>,
+    mut physics: ResMut<Physics>,
 ) {
-    let started = Instant::now();
     let handles = body_assets.handles.clone();
     for (index, handle) in handles.iter().enumerate() {
         if body_assets.spawned[index] {
@@ -183,24 +174,31 @@ fn spawn_loaded_bodies(
         };
         let render_mesh = primitive.mesh.clone();
         let body = &bodies.0[index];
-        let soft_body = SoftBody::from_mesh(positions, indices, body.position);
+        body_assets.spawned[index] = true;
+        let Some(soft_body) = spawn_soft_body(
+            &mut physics,
+            &positions,
+            &indices,
+            body.position,
+            body.rotation,
+            render_mesh.clone(),
+        ) else {
+            warn!("GLB body {} has an empty mesh", body.asset_name);
+            continue;
+        };
         info!(
-            "loaded mesh {}: vertices={} triangles={} springs={}",
+            "loaded mesh {}: vertices={} triangles={}",
             body.asset_name,
-            soft_body.vertices.len(),
-            soft_body.triangles.len() / 3,
-            soft_body.springs.len()
+            positions.len(),
+            indices.len() / 3
         );
         commands.spawn((
-            Mesh3d(render_mesh.clone()),
+            Mesh3d(render_mesh),
             MeshMaterial3d(primitive.material.clone().unwrap_or_default()),
             LogicFrame { index },
             soft_body,
-            SoftBodyMesh { mesh: render_mesh },
         ));
-        body_assets.spawned[index] = true;
     }
-    timings.record("asset_loading", started);
 }
 
 fn extract_positions(mesh: &Mesh) -> Option<Vec<Vec3>> {
@@ -245,45 +243,13 @@ fn move_selected_frame(
     }
 }
 
-fn sync_logic_frames(
-    bodies: Res<DemoBodies>,
-    mut query: Query<(&LogicFrame, &mut SoftBody)>,
-    mut timings: ResMut<PerformanceTimings>,
-) {
-    let started = Instant::now();
+fn sync_logic_frames(bodies: Res<DemoBodies>, mut query: Query<(&LogicFrame, &mut SoftBody)>) {
     if !bodies.is_changed() {
-        timings.record("logic_sync", started);
         return;
     }
     for (frame, mut soft_body) in &mut query {
         let body = &bodies.0[frame.index];
-        soft_body.frame_position = body.position;
-        soft_body.frame_rotation = body.rotation;
-    }
-    timings.record("logic_sync", started);
-}
-
-fn sync_soft_body_mesh(
-    bodies: Query<(&SoftBody, &SoftBodyMesh)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut timings: ResMut<PerformanceTimings>,
-) {
-    let started = Instant::now();
-    for (body, mesh_handle) in &bodies {
-        let positions: Vec<[f32; 3]> = body
-            .vertices
-            .iter()
-            .map(|vertex| vertex.position.to_array())
-            .collect();
-        if let Some(mesh) = meshes.get_mut(&mesh_handle.mesh) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        }
-    }
-    timings.record("mesh_sync", started);
-}
-
-fn report_performance(time: Res<Time>, mut timings: ResMut<PerformanceTimings>) {
-    if timings.advance_report_clock(time.delta_secs()) {
-        info!("performance:{}", timings.take_report());
+        soft_body.position = body.position;
+        soft_body.rotation = body.rotation;
     }
 }
