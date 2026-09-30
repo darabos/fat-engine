@@ -9,8 +9,16 @@ use rapier3d::prelude::{
 const ROOT_CLUSTER: u32 = 0;
 /// Roughly how many simulated cells span the longest side of a body.
 const CELLS_ACROSS: f32 = 5.0;
+/// Halvings of the cells that straddle the surface. Each one is a few times more particles.
+const CAGE_SUBDIVISIONS: u32 = 0;
+/// Shrink-wrap passes pulling the cage onto the mesh; they never let the mesh poke out.
+const CAGE_SMOOTHING: u32 = 12;
+/// How close to the mesh the shrink-wrap may pull, as a fraction of the local cell size.
+const CAGE_GUARD: f32 = 0.05;
+/// Contact skin around the body, as a fraction of the cell size.
+const CONTACT_SKIN: f32 = 0.01;
 /// How hard the body is held at the pose the logic side asks for, in Hz.
-const POSE_STIFFNESS: f32 = 6.0;
+const POSE_STIFFNESS: f32 = 5.0;
 
 #[derive(Resource, Default)]
 pub struct Physics(pub PhysicsWorld);
@@ -67,16 +75,26 @@ fn build_cage(
     triangles: &[[u32; 3]],
     cell_size: f32,
 ) -> Option<SoftBodyBuilder> {
-    if let Some(builder) = SoftBodyBuilder::volumetric_skinned(vertices, triangles, cell_size) {
-        return Some(builder);
-    }
-    // A mesh that isn't closed has no inside to fill, so it gets a shell of cells instead.
-    let params = VolumeMeshParameters {
-        enclosure: MeshEnclosure::Crust,
+    // Without smoothing and subdivision the cage is a raw lattice standing up to a whole cell
+    // outside the mesh.
+    let params = |enclosure| VolumeMeshParameters {
+        enclosure,
+        cover_subdivisions: CAGE_SUBDIVISIONS,
+        cover_smoothing: CAGE_SMOOTHING,
+        cover_guard: CAGE_GUARD,
         ..VolumeMeshParameters::new(cell_size)
     };
-    let builder = SoftBodyBuilder::volumetric_with(vertices, triangles, &params)?;
-    Some(builder.skin(vertices.to_vec(), triangles.to_vec()))
+    let builder =
+        SoftBodyBuilder::volumetric_with(vertices, triangles, &params(MeshEnclosure::Cover))
+            // A mesh that isn't closed has no inside to fill, so it gets a shell of cells.
+            .or_else(|| {
+                SoftBodyBuilder::volumetric_with(vertices, triangles, &params(MeshEnclosure::Crust))
+            })?;
+    Some(
+        builder
+            .skin(vertices.to_vec(), triangles.to_vec())
+            .particle_radius(cell_size * CONTACT_SKIN),
+    )
 }
 
 pub fn spawn_soft_body(
@@ -213,12 +231,49 @@ mod tests {
         soft_body.particle_positions().map(to_bevy).sum::<Vec3>() / soft_body.num_particles() as f32
     }
 
+    /// How far a cage stands outside the mesh it was built for, in cell sizes.
+    fn overshoot(positions: &[RVec], half_extent: f32, cell_size: f32) -> f32 {
+        positions
+            .iter()
+            .map(|p| (to_bevy(*p).abs().max_element() - half_extent).max(0.0))
+            .fold(0.0, f32::max)
+            / cell_size
+    }
+
     fn simulate(physics: &mut Physics, body: &SoftBody, steps: usize) {
         physics.0.integration_parameters.dt = 1.0 / 60.0;
         for _ in 0..steps {
             apply_target(&mut physics.0, body);
             physics.0.step();
         }
+    }
+
+    #[test]
+    fn the_cage_hugs_the_mesh_tighter_than_a_raw_lattice() {
+        let part = cube();
+        let vertices: Vec<RVec> = part.positions.iter().map(|&p| to_rapier(p)).collect();
+        let triangles: Vec<[u32; 3]> = part
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        let cell_size = 1.0 / CELLS_ACROSS;
+
+        let raw = SoftBodyBuilder::volumetric_with(
+            &vertices,
+            &triangles,
+            &VolumeMeshParameters::new(cell_size),
+        )
+        .expect("the cube fills with cells");
+        let tuned =
+            build_cage(&vertices, &triangles, cell_size).expect("the cube fills with cells");
+
+        let raw = overshoot(raw.particle_positions(), 0.5, cell_size);
+        let tuned = overshoot(tuned.particle_positions(), 0.5, cell_size);
+        assert!(
+            tuned < raw * 0.75,
+            "the cage stands {tuned} cell sizes outside the mesh, the raw lattice {raw}"
+        );
     }
 
     #[test]
