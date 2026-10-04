@@ -5,7 +5,10 @@ use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
-use fat_engine::physics::{Physics, SkinPart, SoftBody, SoftBodyPlugin, spawn_soft_body};
+use fat_engine::physics::{
+    Physics, SkinPart, SoftBody, SoftBodyPlugin, SoftBodyShape, prepare_soft_body_shape,
+    spawn_soft_body_from_shape,
+};
 use fat_engine::scripting::{GameCommand, ScriptRuntime};
 use fat_engine::slime::{
     ATTRIBUTE_REST_POSITION, BACK_FACE_LAYER, SlimeAssets, SlimeCamera, SlimeMaterial,
@@ -33,6 +36,7 @@ struct BodyAssets {
     handles: Vec<Handle<Gltf>>,
     spawned: Vec<bool>,
     by_path: HashMap<String, Handle<Gltf>>,
+    shapes: HashMap<String, SoftBodyShape>,
 }
 
 #[derive(Component)]
@@ -312,19 +316,45 @@ fn spawn_loaded_bodies(
             continue;
         }
 
+        let asset_path = if body.asset_name.ends_with(".glb") {
+            body.asset_name.clone()
+        } else {
+            format!("{}.glb", body.asset_name)
+        };
+        if !body_assets.shapes.contains_key(&asset_path) {
+            let Some(shape) = prepare_soft_body_shape(&parts) else {
+                warn!(
+                    "GLB body {} could not be filled with cells",
+                    body.asset_name
+                );
+                continue;
+            };
+            info!(
+                "prepared soft-body shape for {}: primitives={}",
+                body.asset_name,
+                parts.len()
+            );
+            body_assets.shapes.insert(asset_path.clone(), shape);
+        }
+
         let vertices: usize = parts.iter().map(|part| part.positions.len()).sum();
         let triangles: usize = parts.iter().map(|part| part.indices.len() / 3).sum();
         let render_meshes: Vec<Handle<Mesh>> = parts.iter().map(|part| part.mesh.clone()).collect();
-        let Some(soft_body) = spawn_soft_body(&mut physics, parts, body.position, body.rotation)
+        let shape = body_assets
+            .shapes
+            .get(&asset_path)
+            .expect("shape was prepared or already cached");
+        let Some(soft_body) =
+            spawn_soft_body_from_shape(&mut physics, shape, parts, body.position, body.rotation)
         else {
             warn!(
-                "GLB body {} could not be filled with cells",
+                "GLB body {} could not be spawned from its cached shape",
                 body.asset_name
             );
             continue;
         };
-        info!(
-            "loaded {}: primitives={} vertices={} triangles={}",
+        debug!(
+            "spawned {} instance: primitives={} vertices={} triangles={}",
             body.asset_name,
             render_meshes.len(),
             vertices,

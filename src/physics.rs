@@ -68,6 +68,12 @@ pub struct SoftBody {
     slices: Vec<SkinSlice>,
 }
 
+/// Geometry-derived cage data shared by every instance of the same asset.
+#[derive(Clone)]
+pub struct SoftBodyShape {
+    builder: SoftBodyBuilder,
+}
+
 pub struct SoftBodyPlugin;
 
 impl Plugin for SoftBodyPlugin {
@@ -112,48 +118,46 @@ fn build_cage(
             .or_else(|| {
                 SoftBodyBuilder::volumetric_with(vertices, triangles, &params(MeshEnclosure::Crust))
             })?;
-    Some(
-        builder
-            .skin(vertices.to_vec(), triangles.to_vec())
-            .particle_radius(cell_size * CONTACT_SKIN),
-    )
+    Some(builder.particle_radius(cell_size * CONTACT_SKIN))
 }
 
-pub fn spawn_soft_body(
-    physics: &mut Physics,
-    parts: Vec<SkinPart>,
-    position: Vec3,
-    rotation: Quat,
-) -> Option<SoftBody> {
-    let mut vertices: Vec<RVec> = Vec::new();
+fn combine_parts(parts: &[SkinPart]) -> (Vec<RVec>, Vec<[u32; 3]>, Vec<SkinSlice>) {
+    let mut vertices = Vec::new();
     let mut triangles: Vec<[u32; 3]> = Vec::new();
     let mut slices = Vec::with_capacity(parts.len());
-    let mut minimum = Vec3::splat(f32::MAX);
-    let mut maximum = Vec3::splat(f32::MIN);
     for part in parts {
         let start = vertices.len();
         for &p in &part.positions {
-            minimum = minimum.min(p);
-            maximum = maximum.max(p);
-            vertices.push(to_rapier(position + p));
+            vertices.push(to_rapier(p));
         }
         let offset = start as u32;
         for t in part.indices.chunks_exact(3) {
             triangles.push([t[0] + offset, t[1] + offset, t[2] + offset]);
         }
         slices.push(SkinSlice {
-            mesh: part.mesh,
+            mesh: part.mesh.clone(),
             start,
             len: part.positions.len(),
         });
     }
+    (vertices, triangles, slices)
+}
+
+pub fn prepare_soft_body_shape(parts: &[SkinPart]) -> Option<SoftBodyShape> {
+    let (vertices, triangles, _) = combine_parts(parts);
     if vertices.is_empty() || triangles.is_empty() {
         return None;
     }
 
+    let mut minimum = Vec3::splat(f32::MAX);
+    let mut maximum = Vec3::splat(f32::MIN);
+    for part in parts {
+        for &position in &part.positions {
+            minimum = minimum.min(position);
+            maximum = maximum.max(position);
+        }
+    }
     let cell_size = (maximum - minimum).max_element() / CELLS_ACROSS;
-    // Shape matching is what ties the particles to the pose the logic side sets; the volumetric
-    // constructors leave it off.
     let builder = build_cage(&vertices, &triangles, cell_size)?
         .shape_matching(true)
         .material(SoftBodyMaterial {
@@ -169,6 +173,29 @@ pub fn spawn_soft_body(
                 .friction(FRICTION)
                 .restitution(RESTITUTION),
         );
+    Some(SoftBodyShape { builder })
+}
+
+pub fn spawn_soft_body_from_shape(
+    physics: &mut Physics,
+    shape: &SoftBodyShape,
+    parts: Vec<SkinPart>,
+    position: Vec3,
+    rotation: Quat,
+) -> Option<SoftBody> {
+    let (mut vertices, triangles, slices) = combine_parts(&parts);
+    if vertices.is_empty() || triangles.is_empty() {
+        return None;
+    }
+    for vertex in &mut vertices {
+        *vertex += to_rapier(position);
+    }
+
+    let mut builder = shape.builder.clone();
+    for cage_position in &mut builder.positions {
+        *cage_position += to_rapier(position);
+    }
+    builder = builder.skin(vertices, triangles);
     let handle = physics.0.insert_soft_body(builder);
 
     let body = &physics.0.soft_bodies[handle];
@@ -181,6 +208,16 @@ pub fn spawn_soft_body(
         local_center: cage_center - position,
         slices,
     })
+}
+
+pub fn spawn_soft_body(
+    physics: &mut Physics,
+    parts: Vec<SkinPart>,
+    position: Vec3,
+    rotation: Quat,
+) -> Option<SoftBody> {
+    let shape = prepare_soft_body_shape(&parts)?;
+    spawn_soft_body_from_shape(physics, &shape, parts, position, rotation)
 }
 
 /// Pulls the body toward the pose the logic side asks for, leaving the cells free to deform.
@@ -392,5 +429,38 @@ mod tests {
             (moved - Vec3::X).length() < 0.05,
             "the body moved by {moved}"
         );
+    }
+
+    #[test]
+    fn cached_shape_spawns_independent_bodies_at_distinct_positions() {
+        let part = cube();
+        let shape = prepare_soft_body_shape(std::slice::from_ref(&part))
+            .expect("the cube fills with cells");
+        let mut physics = Physics::default();
+
+        let first = spawn_soft_body_from_shape(
+            &mut physics,
+            &shape,
+            vec![cube()],
+            Vec3::new(-2.0, 3.0, 0.0),
+            Quat::IDENTITY,
+        )
+        .expect("the first body spawns from the cached shape");
+        let second = spawn_soft_body_from_shape(
+            &mut physics,
+            &shape,
+            vec![cube()],
+            Vec3::new(2.0, 3.0, 0.0),
+            Quat::IDENTITY,
+        )
+        .expect("the second body spawns from the cached shape");
+
+        let first_center = center(&physics, &first);
+        let second_center = center(&physics, &second);
+        assert!(
+            (second_center - first_center - Vec3::X * 4.0).length() < 0.05,
+            "cached bodies were not offset independently: {first_center} and {second_center}"
+        );
+        assert_ne!(first.handle, second.handle);
     }
 }
