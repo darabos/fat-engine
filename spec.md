@@ -1,6 +1,8 @@
 We're creating a soft body game engine in Bevy. It is made up of two parts: logic and display.
 
-On the logic side, each object has an asset name, a position and a rotation. Nothing more! The logic for moving around the objects will be added later.
+The logic side is driven by `assets/scripts/logic.lua`. Lua's optional `_init()` hook runs once at startup, and `_update()` runs once per rendered frame. The global `game` table provides `add_entity(asset, x, y)`, `set_camera_view(x, y, width, height)`, and `btnp(button)` (`up`, `down`, `left`, or `right`). Entity asset names are paths relative to `assets`; `.glb` is appended when omitted. Entity handles provide `move_to(x, y)`, `set_rotation(degrees)`, and `remove()`. Lua's x/y plane maps to world x/z, with rotation around the world y axis.
+
+On the logic side, each object has an asset name, a position and a rotation. Nothing more!
 
 On the display side, we load the 3D mesh from the `assets` directory according to the asset name and turn it into a [Rapier](https://rapier.rs/docs/user_guides/rust/soft_bodies/) soft body. All primitives of all meshes in the file are loaded, so an asset can be authored from several pieces with different materials.
 
@@ -14,4 +16,3 @@ All physics is done by Rapier 0.36 (`rapier3d`), held in a single `PhysicsWorld`
 - After each step, the skin vertices are read back and each primitive's render mesh is refreshed from its own slice of them.
 
 Create a demo where a few assets are loaded from `assets/animals` and placed on a plane in this engine. Let the player move one of the bodies with the arrow keys.
-

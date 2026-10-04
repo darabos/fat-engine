@@ -6,19 +6,23 @@ player = {
     -- Logical coordinates.
     x = 1,
     y = 1,
+    rot = 0,
     -- Render coordinates.
     rx = 1,
     ry = 1,
+    rrot = 0,
 }
 -- Like in PICO-8, `_init` is called on startup.
 function _init()
-    for i = 1, 10 do
-      -- `game` is a global game object added to the scope by Rust.
-      -- `add_entity` places the specified asset at the given x/y coordinates.
-      game.add_entity("wall", i, 0)
-      game.add_entity("wall", i, 9)
-      game.add_entity("wall", 0, i)
-      game.add_entity("wall", 9, i)
+    for i = 1, 8 do
+      if i%3==0 then
+        -- `game` is a global game object added to the scope by Rust.
+        -- `add_entity` places the specified asset at the given x/y coordinates.
+        game.add_entity("wall", i, 0)
+        game.add_entity("wall", i, 9)
+        game.add_entity("wall", 0, i)
+        game.add_entity("wall", 9, i)
+      end
     end
     game.add_entity("goal", 8, 8)
     -- `add_entity` returns a handle to the object,
@@ -39,8 +43,8 @@ function _update()
         else
             player.y = player.y - 1
         end
+        player.rot = 180
         -- `set_rotation` sets the rotation of the LogicBody in degrees.
-        player.entity.set_rotation(0)
     end
     if game.btnp("down") then
         if player.y == 8 then
@@ -48,7 +52,7 @@ function _update()
         else
             player.y = player.y + 1
         end
-        player.entity.set_rotation(180)
+        player.rot = 0
     end
     if game.btnp("left") then
         if player.x == 1 then
@@ -56,7 +60,7 @@ function _update()
         else
             player.x = player.x - 1
         end
-        player.entity.set_rotation(270)
+        player.rot = 270
     end
     if game.btnp("right") then
         if player.x == 8 then
@@ -64,10 +68,12 @@ function _update()
         else
             player.x = player.x + 1
         end
-        player.entity.set_rotation(90)
+        player.rot = 90
     end
     player.rx = 0.9 * player.rx + 0.1 * player.x
     player.ry = 0.9 * player.ry + 0.1 * player.y
+    player.rrot = 0.9 * player.rrot + 0.1 * player.rot
     -- `move_to` moves the LogicBody to the given position instantly.
     player.entity.move_to(player.rx, player.ry)
+    player.entity.set_rotation(player.rrot)
 end

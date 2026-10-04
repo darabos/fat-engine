@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = "0.16.1"
+mlua = { version = "0.12.2", features = ["lua54", "vendored"] }
 rapier3d = "0.36"
 
 [profile.dev.package."*"]

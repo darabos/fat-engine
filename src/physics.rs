@@ -8,7 +8,7 @@ use rapier3d::prelude::{
 /// The whole-body cluster Rapier creates at insertion.
 const ROOT_CLUSTER: u32 = 0;
 /// Roughly how many simulated cells span the longest side of a body.
-const CELLS_ACROSS: f32 = 5.0;
+const CELLS_ACROSS: f32 = 3.0;
 /// Halvings of the cells that straddle the surface. Each one is a few times more particles.
 const CAGE_SUBDIVISIONS: u32 = 0;
 /// Shrink-wrap passes pulling the cage onto the mesh; they never let the mesh poke out.

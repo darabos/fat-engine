@@ -1,37 +1,51 @@
+use bevy::asset::LoadState;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::gltf::{Gltf, GltfMesh};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::view::RenderLayers;
-use fat_engine::slime::{
-    ATTRIBUTE_REST_POSITION, BACK_FACE_LAYER, SlimeAssets, SlimeCamera, SlimeMaterial, SlimeMaterials, SlimePlugin,
-};
+use bevy::window::PrimaryWindow;
 use fat_engine::physics::{Physics, SkinPart, SoftBody, SoftBodyPlugin, spawn_soft_body};
+use fat_engine::scripting::{GameCommand, ScriptRuntime};
+use fat_engine::slime::{
+    ATTRIBUTE_REST_POSITION, BACK_FACE_LAYER, SlimeAssets, SlimeCamera, SlimeMaterial,
+    SlimeMaterials, SlimePlugin,
+};
+use std::collections::HashMap;
+use std::fs;
 
 const ENABLE_SLIME_SHADER: bool = false;
 
 #[derive(Clone, Debug)]
 struct LogicBody {
-    asset_name: &'static str,
+    handle: u64,
+    asset_name: String,
     position: Vec3,
     rotation: Quat,
+    active: bool,
 }
 
-#[derive(Resource)]
-struct DemoBodies(Vec<LogicBody>);
+#[derive(Resource, Default)]
+struct GameBodies(Vec<LogicBody>);
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 struct BodyAssets {
     handles: Vec<Handle<Gltf>>,
     spawned: Vec<bool>,
+    by_path: HashMap<String, Handle<Gltf>>,
 }
 
 #[derive(Component)]
 struct LogicFrame {
-    index: usize,
+    handle: u64,
 }
 
 fn main() {
+    let script = fs::read_to_string("assets/scripts/logic.lua")
+        .expect("failed to read assets/scripts/logic.lua");
+    let script_runtime =
+        ScriptRuntime::new(&script).expect("failed to initialize assets/scripts/logic.lua");
+
     App::new()
         .add_plugins(DefaultPlugins.set(AssetPlugin {
             file_path: "assets".into(),
@@ -42,47 +56,39 @@ fn main() {
             LogDiagnosticsPlugin::default(),
         ))
         .add_plugins((SoftBodyPlugin, SlimePlugin))
-        .insert_resource(DemoBodies(vec![
-            LogicBody {
-                asset_name: "animals/beholder2.glb",
-                position: Vec3::new(-2.0, 0.0, 0.0),
-                rotation: Quat::IDENTITY,
-            },
-            LogicBody {
-                asset_name: "animals/test.glb",
-                position: Vec3::new(0.0, 0.0, 0.0),
-                rotation: Quat::IDENTITY,
-            },
-            LogicBody {
-                asset_name: "animals/animal-pig3.glb",
-                position: Vec3::new(1.3, 0.0, 0.0),
-                rotation: Quat::IDENTITY,
-            },
-            LogicBody {
-                asset_name: "animals/animal-pig3.glb",
-                position: Vec3::new(2.6, 0.0, 0.0),
-                rotation: Quat::IDENTITY,
-            },
-        ]))
-        .add_systems(Startup, setup)
+        .insert_resource(GameBodies::default())
+        .insert_resource(BodyAssets::default())
+        .insert_resource(CameraView::default())
+        .insert_non_send_resource(script_runtime)
+        .add_systems(Startup, (setup, run_script_init).chain())
         .add_systems(
             Update,
-            (spawn_loaded_bodies, move_selected_frame, sync_logic_frames).chain(),
+            (
+                run_script_update,
+                apply_script_commands,
+                spawn_loaded_bodies,
+                sync_logic_frames,
+                update_camera_view,
+            )
+                .chain(),
         )
         .run();
 }
 
+#[derive(Resource, Default)]
+struct CameraView(Option<(f32, f32, f32, f32)>);
+
 fn setup(
     mut commands: Commands,
-    bodies: Res<DemoBodies>,
-    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let camera = commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(7.0, 5.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
-    )).id();
+    let camera = commands
+        .spawn((
+            Camera3d::default(),
+            Transform::from_xyz(7.0, 8.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ))
+        .id();
     if ENABLE_SLIME_SHADER {
         commands.entity(camera).insert(SlimeCamera);
     }
@@ -94,15 +100,6 @@ fn setup(
         },
         Transform::from_xyz(4.0, 8.0, 4.0),
     ));
-
-    commands.insert_resource(BodyAssets {
-        handles: bodies
-            .0
-            .iter()
-            .map(|body| asset_server.load(body.asset_name))
-            .collect(),
-        spawned: vec![false; bodies.0.len()],
-    });
 
     commands.spawn((
         DirectionalLight {
@@ -121,10 +118,115 @@ fn setup(
     ));
 }
 
+fn run_script_init(runtime: NonSendMut<ScriptRuntime>) {
+    runtime.initialize().expect("Lua _init hook failed");
+}
+
+fn run_script_update(keyboard: Res<ButtonInput<KeyCode>>, mut runtime: NonSendMut<ScriptRuntime>) {
+    let mut just_pressed = Vec::new();
+    if keyboard.just_pressed(KeyCode::ArrowUp) {
+        just_pressed.push("up");
+    }
+    if keyboard.just_pressed(KeyCode::ArrowDown) {
+        just_pressed.push("down");
+    }
+    if keyboard.just_pressed(KeyCode::ArrowLeft) {
+        just_pressed.push("left");
+    }
+    if keyboard.just_pressed(KeyCode::ArrowRight) {
+        just_pressed.push("right");
+    }
+    runtime
+        .update(&just_pressed)
+        .expect("Lua _update hook failed");
+}
+
+fn apply_script_commands(
+    mut commands: Commands,
+    mut runtime: NonSendMut<ScriptRuntime>,
+    mut bodies: ResMut<GameBodies>,
+    mut body_assets: ResMut<BodyAssets>,
+    asset_server: Res<AssetServer>,
+    mut camera_view: ResMut<CameraView>,
+    mut physics: ResMut<Physics>,
+    entities: Query<(Entity, &LogicFrame, &SoftBody)>,
+) {
+    for command in runtime.drain_commands() {
+        match command {
+            GameCommand::AddEntity {
+                handle,
+                asset_name,
+                x,
+                y,
+            } => {
+                if bodies.0.iter().any(|body| body.handle == handle) {
+                    warn!("Lua attempted to reuse entity handle {handle}");
+                    continue;
+                }
+                let asset_path = if asset_name.ends_with(".glb") {
+                    asset_name.clone()
+                } else {
+                    format!("{asset_name}.glb")
+                };
+                let asset_handle = body_assets
+                    .by_path
+                    .entry(asset_path.clone())
+                    .or_insert_with(|| asset_server.load(asset_path))
+                    .clone();
+                bodies.0.push(LogicBody {
+                    handle,
+                    asset_name,
+                    position: Vec3::new(x, 0.0, y),
+                    rotation: Quat::IDENTITY,
+                    active: true,
+                });
+                body_assets.handles.push(asset_handle);
+                body_assets.spawned.push(false);
+            }
+            GameCommand::MoveTo { handle, x, y } => {
+                if let Some(body) = bodies.0.iter_mut().find(|body| body.handle == handle) {
+                    body.position.x = x;
+                    body.position.z = y;
+                } else {
+                    warn!("Lua attempted to move unknown entity handle {handle}");
+                }
+            }
+            GameCommand::SetRotation { handle, degrees } => {
+                if let Some(body) = bodies.0.iter_mut().find(|body| body.handle == handle) {
+                    body.rotation = Quat::from_rotation_y(degrees.to_radians());
+                } else {
+                    warn!("Lua attempted to rotate unknown entity handle {handle}");
+                }
+            }
+            GameCommand::RemoveEntity { handle } => {
+                let Some(body) = bodies.0.iter_mut().find(|body| body.handle == handle) else {
+                    warn!("Lua attempted to remove unknown entity handle {handle}");
+                    continue;
+                };
+                body.active = false;
+                for (entity, frame, soft_body) in &entities {
+                    if frame.handle == handle {
+                        physics.0.remove_soft_body(soft_body.handle);
+                        commands.entity(entity).despawn();
+                        break;
+                    }
+                }
+            }
+            GameCommand::SetCameraView {
+                x,
+                y,
+                width,
+                height,
+            } => camera_view.0 = Some((x, y, width, height)),
+        }
+    }
+}
+
 fn spawn_loaded_bodies(
     mut commands: Commands,
-    bodies: Res<DemoBodies>,
+    bodies: Res<GameBodies>,
     mut body_assets: ResMut<BodyAssets>,
+    asset_server: Res<AssetServer>,
     gltfs: Res<Assets<Gltf>>,
     gltf_meshes: Res<Assets<GltfMesh>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -138,7 +240,18 @@ fn spawn_loaded_bodies(
         if body_assets.spawned[index] {
             continue;
         }
+        if !bodies.0[index].active {
+            body_assets.spawned[index] = true;
+            continue;
+        }
         let Some(gltf) = gltfs.get(handle) else {
+            if let Some(LoadState::Failed(error)) = asset_server.get_load_state(handle.id()) {
+                warn!(
+                    "failed to load script entity asset {}: {error}",
+                    bodies.0[index].asset_name
+                );
+                body_assets.spawned[index] = true;
+            }
             continue;
         };
         let body = &bodies.0[index];
@@ -219,7 +332,9 @@ fn spawn_loaded_bodies(
         );
         let body_entity = commands
             .spawn((
-                LogicFrame { index },
+                LogicFrame {
+                    handle: body.handle,
+                },
                 soft_body,
                 Transform::default(),
                 Visibility::default(),
@@ -234,7 +349,9 @@ fn spawn_loaded_bodies(
                     slime_materials.add(slime.material(base))
                 })
                 .collect();
-            commands.entity(body_entity).insert(SlimeMaterials(slime_handles.clone()));
+            commands
+                .entity(body_entity)
+                .insert(SlimeMaterials(slime_handles.clone()));
             commands.entity(body_entity).with_children(|parent| {
                 for (mesh, material) in render_meshes.into_iter().zip(slime_handles) {
                     parent.spawn((
@@ -274,36 +391,48 @@ fn extract_indices(mesh: &Mesh) -> Option<Vec<u32>> {
     }
 }
 
-fn move_selected_frame(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    mut bodies: ResMut<DemoBodies>,
-) {
-    let mut direction = Vec3::ZERO;
-    if keyboard.pressed(KeyCode::ArrowLeft) {
-        direction.x -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::ArrowRight) {
-        direction.x += 1.0;
-    }
-    if keyboard.pressed(KeyCode::ArrowUp) {
-        direction.z -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::ArrowDown) {
-        direction.z += 1.0;
-    }
-    if direction != Vec3::ZERO {
-        bodies.0[0].position += direction.normalize() * 3.0 * time.delta_secs();
-    }
-}
-
-fn sync_logic_frames(bodies: Res<DemoBodies>, mut query: Query<(&LogicFrame, &mut SoftBody)>) {
+fn sync_logic_frames(bodies: Res<GameBodies>, mut query: Query<(&LogicFrame, &mut SoftBody)>) {
     if !bodies.is_changed() {
         return;
     }
     for (frame, mut soft_body) in &mut query {
-        let body = &bodies.0[frame.index];
+        let Some(body) = bodies.0.iter().find(|body| body.handle == frame.handle) else {
+            continue;
+        };
+        if !body.active {
+            continue;
+        }
         soft_body.position = body.position;
         soft_body.rotation = body.rotation;
+    }
+}
+
+fn update_camera_view(
+    camera_view: Res<CameraView>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut cameras: Query<(&mut Transform, &Projection), With<Camera3d>>,
+) {
+    if !camera_view.is_changed() {
+        return;
+    }
+    let Some((x, y, width, height)) = camera_view.0 else {
+        return;
+    };
+    let aspect = windows
+        .single()
+        .map(|window| window.width() / window.height())
+        .unwrap_or(1.0)
+        .max(f32::EPSILON);
+    let visible_span = height.max(width / aspect);
+    let center = Vec3::new(x + width * 0.5, 0.0, y + height * 0.5);
+    for (mut transform, projection) in &mut cameras {
+        let distance = match projection {
+            Projection::Perspective(perspective) => {
+                visible_span * 0.5 / (perspective.fov * 0.5).tan() * 1.1
+            }
+            _ => visible_span + 1.0,
+        };
+        *transform =
+            Transform::from_translation(center + Vec3::Y * distance).looking_at(center, -Vec3::Z);
     }
 }
