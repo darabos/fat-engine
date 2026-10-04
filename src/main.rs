@@ -8,6 +8,8 @@ use fat_engine::slime::{
 };
 use fat_engine::physics::{Physics, SkinPart, SoftBody, SoftBodyPlugin, spawn_soft_body};
 
+const ENABLE_SLIME_SHADER: bool = false;
+
 #[derive(Clone, Debug)]
 struct LogicBody {
     asset_name: &'static str,
@@ -42,23 +44,23 @@ fn main() {
         .add_plugins((SoftBodyPlugin, SlimePlugin))
         .insert_resource(DemoBodies(vec![
             LogicBody {
-                asset_name: "animal-pig3",
-                position: Vec3::new(-2.0, 0.5, 0.0),
+                asset_name: "animals/beholder2.glb",
+                position: Vec3::new(-2.0, 0.0, 0.0),
                 rotation: Quat::IDENTITY,
             },
             LogicBody {
-                asset_name: "animal-pig3",
-                position: Vec3::new(0.0, 0.5, 0.0),
+                asset_name: "animals/test.glb",
+                position: Vec3::new(0.0, 0.0, 0.0),
                 rotation: Quat::IDENTITY,
             },
             LogicBody {
-                asset_name: "animal-pig3",
-                position: Vec3::new(1.3, 0.5, 0.0),
+                asset_name: "animals/animal-pig3.glb",
+                position: Vec3::new(1.3, 0.0, 0.0),
                 rotation: Quat::IDENTITY,
             },
             LogicBody {
-                asset_name: "animal-pig3",
-                position: Vec3::new(2.6, 0.5, 0.0),
+                asset_name: "animals/animal-pig3.glb",
+                position: Vec3::new(2.6, 0.0, 0.0),
                 rotation: Quat::IDENTITY,
             },
         ]))
@@ -77,11 +79,13 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.spawn((
+    let camera = commands.spawn((
         Camera3d::default(),
-        SlimeCamera,
         Transform::from_xyz(7.0, 5.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    )).id();
+    if ENABLE_SLIME_SHADER {
+        commands.entity(camera).insert(SlimeCamera);
+    }
     commands.spawn((
         PointLight {
             intensity: 1800.0,
@@ -95,7 +99,7 @@ fn setup(
         handles: bodies
             .0
             .iter()
-            .map(|body| asset_server.load(format!("animals/{}.glb", body.asset_name)))
+            .map(|body| asset_server.load(body.asset_name))
             .collect(),
         spawned: vec![false; bodies.0.len()],
     });
@@ -175,10 +179,12 @@ fn spawn_loaded_bodies(
                 };
                 // A private copy, so two bodies of the same asset deform independently.
                 let mut copy = source_mesh.clone();
-                copy.insert_attribute(
-                    ATTRIBUTE_REST_POSITION,
-                    positions.iter().map(|p| p.to_array()).collect::<Vec<_>>(),
-                );
+                if ENABLE_SLIME_SHADER {
+                    copy.insert_attribute(
+                        ATTRIBUTE_REST_POSITION,
+                        positions.iter().map(|p| p.to_array()).collect::<Vec<_>>(),
+                    );
+                }
                 let render_mesh = meshes.add(copy);
                 materials.push(primitive.material.clone().unwrap_or_default());
                 parts.push(SkinPart {
@@ -211,24 +217,26 @@ fn spawn_loaded_bodies(
             vertices,
             triangles
         );
-        // Each body gets its own copies, as the materials carry the body's pose.
-        let materials: Vec<Handle<SlimeMaterial>> = materials
-            .iter()
-            .map(|handle| {
-                let base = standard_materials.get(handle).cloned().unwrap_or_default();
-                slime_materials.add(slime.material(base))
-            })
-            .collect();
-        commands
+        let body_entity = commands
             .spawn((
                 LogicFrame { index },
                 soft_body,
-                SlimeMaterials(materials.clone()),
                 Transform::default(),
                 Visibility::default(),
             ))
-            .with_children(|parent| {
-                for (mesh, material) in render_meshes.into_iter().zip(materials) {
+            .id();
+        if ENABLE_SLIME_SHADER {
+            // Each body gets its own copies, as the materials carry the body's pose.
+            let slime_handles: Vec<Handle<SlimeMaterial>> = materials
+                .iter()
+                .map(|handle| {
+                    let base = standard_materials.get(handle).cloned().unwrap_or_default();
+                    slime_materials.add(slime.material(base))
+                })
+                .collect();
+            commands.entity(body_entity).insert(SlimeMaterials(slime_handles.clone()));
+            commands.entity(body_entity).with_children(|parent| {
+                for (mesh, material) in render_meshes.into_iter().zip(slime_handles) {
                     parent.spawn((
                         Mesh3d(mesh.clone()),
                         MeshMaterial3d(slime.back_material.clone()),
@@ -237,6 +245,13 @@ fn spawn_loaded_bodies(
                     parent.spawn((Mesh3d(mesh), MeshMaterial3d(material)));
                 }
             });
+        } else {
+            commands.entity(body_entity).with_children(|parent| {
+                for (mesh, material) in render_meshes.into_iter().zip(materials) {
+                    parent.spawn((Mesh3d(mesh), MeshMaterial3d(material)));
+                }
+            });
+        }
     }
 }
 
