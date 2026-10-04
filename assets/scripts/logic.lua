@@ -12,19 +12,20 @@ player = {
     ry = 1,
     rrot = 0,
 }
+SIZE = 5
 -- Like in PICO-8, `_init` is called on startup.
 function _init()
-    for i = 1, 8 do
-      if i%3==0 then
+    for i = 1, SIZE-2 do
+      if i%1==0 then
         -- `game` is a global game object added to the scope by Rust.
         -- `add_entity` places the specified asset at the given x/y coordinates.
         game.add_entity("wall", i, 0)
-        game.add_entity("wall", i, 9)
+        game.add_entity("wall", i, SIZE-1)
         game.add_entity("wall", 0, i)
-        game.add_entity("wall", 9, i)
+        game.add_entity("wall", SIZE-1, i)
       end
     end
-    game.add_entity("goal", 8, 8)
+    game.add_entity("goal", SIZE-2, SIZE-2)
     -- `add_entity` returns a handle to the object,
     -- which can be later used to move it or remove it.
     player.entity = game.add_entity("player", player.x, player.y)
@@ -47,7 +48,7 @@ function _update()
         -- `set_rotation` sets the rotation of the LogicBody in degrees.
     end
     if game.btnp("down") then
-        if player.y == 8 then
+        if player.y == SIZE-2 then
             player.ry = player.ry + 0.5
         else
             player.y = player.y + 1
@@ -63,7 +64,7 @@ function _update()
         player.rot = 270
     end
     if game.btnp("right") then
-        if player.x == 8 then
+        if player.x == SIZE-2 then
             player.rx = player.rx + 0.5
         else
             player.x = player.x + 1
@@ -72,7 +73,8 @@ function _update()
     end
     player.rx = 0.9 * player.rx + 0.1 * player.x
     player.ry = 0.9 * player.ry + 0.1 * player.y
-    player.rrot = 0.9 * player.rrot + 0.1 * player.rot
+    rot_delta = ((player.rot - player.rrot + 180) % 360) - 180
+    player.rrot = player.rrot + 0.1 * rot_delta
     -- `move_to` moves the LogicBody to the given position instantly.
     player.entity.move_to(player.rx, player.ry)
     player.entity.set_rotation(player.rrot)
