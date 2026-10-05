@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use rapier3d::parry::transformation::{MeshEnclosure, VolumeMeshParameters};
 use rapier3d::prelude::{
     ColliderBuilder, PhysicsWorld, Pose, Rotation, SoftBodyBuilder, SoftBodyHandle,
-    SoftBodyMaterial, SpringCoefficients, Vector as RVec,
+    SoftBodyMaterial, SoftPatchConstraints, SpringCoefficients, Vector as RVec,
 };
 
 /// The whole-body cluster Rapier creates at insertion.
@@ -19,11 +19,13 @@ const CAGE_GUARD: f32 = 0.05;
 const CONTACT_SKIN: f32 = 0.1;
 /// How hard the body is held at the pose the logic side asks for, in Hz.
 const POSE_STIFFNESS: f32 = 5.0;
+/// Damping of the logic anchor, which must not keep pumping energy into pressed bodies.
+const POSE_DAMPING_RATIO: f32 = 1.0;
 /// Springs along the cell edges, in Hz. These are what resist squashing.
 const EDGE_STIFFNESS: f32 = 10.0;
 /// Per-cell volume constraints, in Hz.
 const VOLUME_STIFFNESS: f32 = 10.0;
-/// Damping ratio shared by the springs above; 1.0 is critical damping.
+/// Damping ratio of the cell springs; 1.0 is critical damping.
 const DAMPING_RATIO: f32 = 0.25;
 /// Settles wobble without slowing the body as a whole, per second. 0 leaves it ringing.
 const DEFORMATION_DAMPING: f32 = 0.25;
@@ -41,6 +43,10 @@ impl Default for Physics {
     fn default() -> Self {
         let mut world = PhysicsWorld::default();
         world.integration_parameters.soft_bodies.contact_stiffening = CONTACT_STIFFENING;
+        let recovery = &mut world.integration_parameters.soft_bodies.recovery;
+        // Let the volume contact own its patch instead of solving competing point contacts too.
+        recovery.overlap_skin_volume = true;
+        recovery.overlap_patch_constraints = SoftPatchConstraints::StandDown;
         Self(world)
     }
 }
@@ -163,7 +169,7 @@ pub fn prepare_soft_body_shape(parts: &[SkinPart]) -> Option<SoftBodyShape> {
         .material(SoftBodyMaterial {
             edge_softness: SpringCoefficients::new(EDGE_STIFFNESS, DAMPING_RATIO),
             volume_softness: SpringCoefficients::new(VOLUME_STIFFNESS, DAMPING_RATIO),
-            shape_matching_softness: SpringCoefficients::new(POSE_STIFFNESS, DAMPING_RATIO),
+            shape_matching_softness: SpringCoefficients::new(POSE_STIFFNESS, POSE_DAMPING_RATIO),
             deformation_damping: DEFORMATION_DAMPING,
             ..Default::default()
         })
@@ -342,15 +348,13 @@ mod tests {
         speed / samples as f32
     }
 
-    #[test]
-    fn bodies_pressed_together_settle_instead_of_vibrating() {
+    fn pressed_cubes(half_separation: f32) -> (Physics, Vec<SoftBody>) {
         let mut physics = Physics::default();
         physics.0.insert_collider(
             ColliderBuilder::cuboid(10.0, 0.1, 10.0).translation(RVec::new(0.0, -0.1, 0.0)),
             None,
         );
-        // Two cubes overlapping by a fifth of their width, both held by the logic side.
-        let bodies: Vec<SoftBody> = [-0.4f32, 0.4]
+        let bodies: Vec<SoftBody> = [-half_separation, half_separation]
             .iter()
             .map(|&x| {
                 spawn_soft_body(
@@ -362,9 +366,78 @@ mod tests {
                 .expect("the cube fills with cells")
             })
             .collect();
+        (physics, bodies)
+    }
 
+    #[test]
+    fn bodies_pressed_together_settle_instead_of_vibrating() {
+        // Two cubes overlapping by a fifth of their width, both held by the logic side.
+        let (mut physics, bodies) = pressed_cubes(0.4);
         let speed = residual_speed(&mut physics, &bodies, 300);
         assert!(speed < 0.05, "the bodies keep moving at {speed}");
+    }
+
+    #[test]
+    fn deep_overlaps_stay_finite_and_still_deform_the_bodies() {
+        for half_separation in [0.05, 0.0] {
+            let (mut physics, bodies) = pressed_cubes(half_separation);
+            let (mut isolated_physics, mut isolated_bodies) = pressed_cubes(half_separation);
+            let removed = isolated_bodies.pop().expect("there are two cubes");
+            isolated_physics.0.remove_soft_body(removed.handle);
+            residual_speed(&mut isolated_physics, &isolated_bodies, 180);
+            let isolated: Vec<_> = isolated_physics.0.soft_bodies[isolated_bodies[0].handle]
+                .particle_positions()
+                .collect();
+            residual_speed(&mut physics, &bodies, 180);
+
+            for body in &bodies {
+                let sb = &physics.0.soft_bodies[body.handle];
+                let collision_mesh = sb.collision_mesh().expect("the cage still collides");
+                assert!(
+                    !collision_mesh.is_skinned(),
+                    "the detailed skin must not collide"
+                );
+                for p in sb.particle_positions().map(to_bevy) {
+                    assert!(p.is_finite(), "overlap produced a non-finite particle");
+                    assert!(
+                        (p - body.position).length() < 2.0,
+                        "overlap exploded the cage"
+                    );
+                }
+                for v in sb.particle_velocities().map(to_bevy) {
+                    assert!(v.is_finite(), "overlap produced a non-finite velocity");
+                }
+            }
+            let deformation = physics.0.soft_bodies[bodies[0].handle]
+                .particle_positions()
+                .zip(isolated)
+                .map(|(p, alone)| (p - alone).length())
+                .fold(0.0, f32::max);
+            assert!(
+                deformation > 0.05,
+                "inter-body contacts did not deform the cage"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "wall-clock benchmark; run separately with --ignored --nocapture"]
+    fn overlapping_cages_fit_the_physics_frame_budget() {
+        for half_separation in [0.4, 0.05, 0.0] {
+            let (mut physics, bodies) = pressed_cubes(half_separation);
+            residual_speed(&mut physics, &bodies, 60);
+            let start = std::time::Instant::now();
+            residual_speed(&mut physics, &bodies, 300);
+            let per_step = start.elapsed().as_secs_f64() / 300.0;
+            eprintln!(
+                "half-separation={half_separation}: {:.2} ms/step",
+                per_step * 1000.0
+            );
+            assert!(
+                per_step < 1.0 / 60.0,
+                "overlapping cages exceeded the 60 Hz physics budget: {per_step:.4} s/step"
+            );
+        }
     }
 
     #[test]
