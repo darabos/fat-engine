@@ -7,8 +7,10 @@ use rapier3d::prelude::{
 
 /// The whole-body cluster Rapier creates at insertion.
 const ROOT_CLUSTER: u32 = 0;
+/// Visual soft-body simulation rate.
+const PHYSICS_HZ: f64 = 30.0;
 /// Roughly how many simulated cells span the longest side of a body.
-const CELLS_ACROSS: f32 = 3.0;
+const CELLS_ACROSS: f32 = 2.0;
 /// Halvings of the cells that straddle the surface. Each one is a few times more particles.
 const CAGE_SUBDIVISIONS: u32 = 0;
 /// Shrink-wrap passes pulling the cage onto the mesh; they never let the mesh poke out.
@@ -20,7 +22,7 @@ const CONTACT_SKIN: f32 = 0.1;
 /// How hard the body is held at the pose the logic side asks for, in Hz.
 const POSE_STIFFNESS: f32 = 5.0;
 /// Damping of the logic anchor, which must not keep pumping energy into pressed bodies.
-const POSE_DAMPING_RATIO: f32 = 1.0;
+const POSE_DAMPING_RATIO: f32 = 3.0;
 /// Springs along the cell edges, in Hz. These are what resist squashing.
 const EDGE_STIFFNESS: f32 = 10.0;
 /// Per-cell volume constraints, in Hz.
@@ -34,7 +36,11 @@ const FRICTION: f32 = 0.3;
 /// Bounciness of the body's surface.
 const RESTITUTION: f32 = 0.0;
 /// Stiffness of soft body contacts relative to rigid ones. Rapier's default is 4.0.
-const CONTACT_STIFFENING: f32 = 1.0;
+const CONTACT_STIFFENING: f32 = 0.5;
+/// Solver substeps per tick; the default four are unnecessary for these soft visual bodies.
+const SOLVER_ITERATIONS: usize = 2;
+/// Extra impact substeps, bounded even when the whole scene is kicked.
+const MAX_EXTRA_SUBSTEPS: usize = 1;
 
 #[derive(Resource)]
 pub struct Physics(pub PhysicsWorld);
@@ -42,6 +48,9 @@ pub struct Physics(pub PhysicsWorld);
 impl Default for Physics {
     fn default() -> Self {
         let mut world = PhysicsWorld::default();
+        world.integration_parameters.dt = 1.0 / PHYSICS_HZ as f32;
+        world.integration_parameters.num_solver_iterations = SOLVER_ITERATIONS;
+        world.integration_parameters.soft_bodies.max_extra_substeps = MAX_EXTRA_SUBSTEPS;
         world.integration_parameters.soft_bodies.contact_stiffening = CONTACT_STIFFENING;
         let recovery = &mut world.integration_parameters.soft_bodies.recovery;
         // Let the volume contact own its patch instead of solving competing point contacts too.
@@ -90,6 +99,7 @@ impl Plugin for SoftBodyPlugin {
             None,
         );
         app.insert_resource(physics)
+            .insert_resource(Time::<Fixed>::from_hz(PHYSICS_HZ))
             .add_systems(FixedUpdate, step_physics)
             .add_systems(PostUpdate, sync_meshes);
     }

@@ -12,7 +12,7 @@ player = {
     ry = 1,
     rrot = 0,
 }
-SIZE = 5
+SIZE = 10
 -- Like in PICO-8, `_init` is called on startup.
 function _init()
     for i = 1, SIZE-2 do
@@ -25,7 +25,9 @@ function _init()
         game.add_entity("wall", SIZE-1, i)
       end
     end
-    game.add_entity("goal", SIZE-2, SIZE-2)
+    for i = 3, SIZE-2 do
+        game.add_entity("goal", i, i)
+    end
     -- `add_entity` returns a handle to the object,
     -- which can be later used to move it or remove it.
     player.entity = game.add_entity("player", player.x, player.y)
