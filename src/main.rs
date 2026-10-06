@@ -6,8 +6,8 @@ use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
 use fat_engine::physics::{
-    Physics, SkinPart, SoftBody, SoftBodyPlugin, SoftBodyShape, prepare_soft_body_shape,
-    spawn_soft_body_from_shape,
+    Physics, PhysicsDebugSettings, SkinPart, SoftBody, SoftBodyPlugin, SoftBodyShape,
+    prepare_soft_body_shape, spawn_soft_body_from_shape,
 };
 use fat_engine::scripting::{GameCommand, ScriptRuntime};
 use fat_engine::slime::{
@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::fs;
 
 const ENABLE_SLIME_SHADER: bool = false;
+const ENABLE_CAGE_RENDERING: bool = true;
 
 #[derive(Clone, Debug)]
 struct LogicBody {
@@ -60,6 +61,9 @@ fn main() {
             LogDiagnosticsPlugin::default(),
         ))
         .add_plugins((SoftBodyPlugin, SlimePlugin))
+        .insert_resource(PhysicsDebugSettings {
+            render_cage: ENABLE_CAGE_RENDERING,
+        })
         .insert_resource(GameBodies::default())
         .insert_resource(BodyAssets::default())
         .insert_resource(CameraView::default())

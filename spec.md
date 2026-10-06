@@ -17,6 +17,8 @@ All physics is done by Rapier 0.36 (`rapier3d`), held in a single `PhysicsWorld`
 - The logic anchor is critically damped so held overlaps do not continually excite it. Cell springs retain their lighter damping for deformation and wobble.
 - After each step, the skin vertices are read back and each primitive's render mesh is refreshed from its own slice of them.
 
+Set `ENABLE_CAGE_RENDERING` to `true` in `src/main.rs` to overlay the live collision cage as a cyan wireframe. The lines remain visible through the rendered skin and follow the simulated deformation. This shows the cage boundary, not its additional contact-skin thickness, and does not change physics. Cage rendering is off by default; the `PhysicsDebugSettings` resource also allows changing it at runtime.
+
 Run `cargo test --lib physics::tests::overlapping_cages_fit_the_physics_frame_budget -- --ignored --nocapture` separately to benchmark moderate, deep, and coincident overlaps against a 60 Hz physics-step budget. This wall-clock check is excluded from normal tests.
 
 Create a demo where a few assets are loaded from `assets/animals` and placed on a plane in this engine. Let the player move one of the bodies with the arrow keys.

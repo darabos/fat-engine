@@ -4,6 +4,7 @@ use rapier3d::prelude::{
     ColliderBuilder, PhysicsWorld, Pose, Rotation, SoftBodyBuilder, SoftBodyHandle,
     SoftBodyMaterial, SoftPatchConstraints, SpringCoefficients, Vector as RVec,
 };
+use std::collections::BTreeSet;
 
 /// The whole-body cluster Rapier creates at insertion.
 const ROOT_CLUSTER: u32 = 0;
@@ -44,6 +45,15 @@ const MAX_EXTRA_SUBSTEPS: usize = 1;
 
 #[derive(Resource)]
 pub struct Physics(pub PhysicsWorld);
+
+#[derive(Resource, Default)]
+pub struct PhysicsDebugSettings {
+    /// Draw the live collision cage through the rendered skin.
+    pub render_cage: bool,
+}
+
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct CageGizmos;
 
 impl Default for Physics {
     fn default() -> Self {
@@ -99,9 +109,17 @@ impl Plugin for SoftBodyPlugin {
             None,
         );
         app.insert_resource(physics)
+            .init_resource::<PhysicsDebugSettings>()
+            .insert_gizmo_config(
+                CageGizmos,
+                GizmoConfig {
+                    depth_bias: -1.0,
+                    ..default()
+                },
+            )
             .insert_resource(Time::<Fixed>::from_hz(PHYSICS_HZ))
             .add_systems(FixedUpdate, step_physics)
-            .add_systems(PostUpdate, sync_meshes);
+            .add_systems(PostUpdate, (sync_meshes, render_cages));
     }
 }
 
@@ -280,6 +298,47 @@ fn sync_meshes(physics: Res<Physics>, bodies: Query<&SoftBody>, mut meshes: ResM
     }
 }
 
+fn cage_segments(body: &rapier3d::prelude::SoftBody) -> Vec<[Vec3; 2]> {
+    let mut segments = Vec::new();
+    for mesh in body
+        .meshes()
+        .filter(|mesh| mesh.collision_enabled() && !mesh.is_skinned())
+    {
+        let positions: Vec<Vec3> = mesh.vertex_positions(body).map(to_bevy).collect();
+        let mut edges = BTreeSet::new();
+        for i in 0..mesh.indices().len() {
+            let vertices = mesh.element(i);
+            for j in 0..vertices.len() {
+                let a = vertices[j];
+                let b = vertices[(j + 1) % vertices.len()];
+                edges.insert([a.min(b), a.max(b)]);
+            }
+        }
+        segments.extend(
+            edges
+                .into_iter()
+                .map(|[a, b]| [positions[a as usize], positions[b as usize]]),
+        );
+    }
+    segments
+}
+
+fn render_cages(
+    settings: Res<PhysicsDebugSettings>,
+    physics: Res<Physics>,
+    bodies: Query<&SoftBody>,
+    mut gizmos: Gizmos<CageGizmos>,
+) {
+    if !settings.render_cage {
+        return;
+    }
+    for body in &bodies {
+        for [a, b] in cage_segments(&physics.0.soft_bodies[body.handle]) {
+            gizmos.line(a, b, Color::srgb(0.0, 1.0, 1.0));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +372,49 @@ mod tests {
     fn center(physics: &Physics, body: &SoftBody) -> Vec3 {
         let soft_body = &physics.0.soft_bodies[body.handle];
         soft_body.particle_positions().map(to_bevy).sum::<Vec3>() / soft_body.num_particles() as f32
+    }
+
+    #[test]
+    fn cage_rendering_is_disabled_by_default() {
+        assert!(!PhysicsDebugSettings::default().render_cage);
+    }
+
+    #[test]
+    fn cage_wireframe_uses_unique_live_collision_edges() {
+        let mut physics = Physics::default();
+        let mut body = spawn_soft_body(
+            &mut physics,
+            vec![cube()],
+            Vec3::new(2.0, 3.0, 4.0),
+            Quat::IDENTITY,
+        )
+        .expect("the cube fills with cells");
+        let sb = &physics.0.soft_bodies[body.handle];
+        let mesh = sb.collision_mesh().expect("the cage collides");
+        let positions: Vec<Vec3> = mesh.vertex_positions(sb).map(to_bevy).collect();
+        let segments = cage_segments(sb);
+        assert!(!segments.is_empty());
+        for (i, segment) in segments.iter().enumerate() {
+            assert!(segment.iter().all(|p| positions.contains(p)));
+            assert!(!segments[..i].contains(segment));
+            assert!(!segments[..i].contains(&[segment[1], segment[0]]));
+        }
+        for &[a, b, c] in mesh.indices() {
+            for [u, v] in [[a, b], [b, c], [c, a]] {
+                let edge = [positions[u as usize], positions[v as usize]];
+                assert!(segments.contains(&edge) || segments.contains(&[edge[1], edge[0]]));
+            }
+        }
+
+        body.position += Vec3::X;
+        simulate(&mut physics, &body, 120);
+        let moved = cage_segments(&physics.0.soft_bodies[body.handle]);
+        assert_eq!(segments.len(), moved.len());
+        for (before, after) in segments.iter().zip(&moved) {
+            for i in 0..2 {
+                assert!((after[i] - before[i] - Vec3::X).length() < 0.05);
+            }
+        }
     }
 
     /// How far a cage stands outside the mesh it was built for, in cell sizes.
