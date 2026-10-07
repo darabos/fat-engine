@@ -119,6 +119,7 @@ fn setup(
             base_color: Color::srgb(0.18, 0.22, 0.2),
             ..default()
         })),
+        Transform::from_xyz(4.0, 0.0, 4.0),
     ));
 }
 

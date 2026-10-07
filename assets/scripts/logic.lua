@@ -19,18 +19,18 @@ function _init()
       if i%1==0 then
         -- `game` is a global game object added to the scope by Rust.
         -- `add_entity` places the specified asset at the given x/y coordinates.
-        game.add_entity("wall", i, 0)
-        game.add_entity("wall", i, SIZE-1)
-        game.add_entity("wall", 0, i)
-        game.add_entity("wall", SIZE-1, i)
+        game.add_entity("tree", i, 0)
+        game.add_entity("tree", i, SIZE-1)
+        game.add_entity("tree", 0, i)
+        game.add_entity("tree", SIZE-1, i)
       end
     end
     for i = 3, SIZE-2 do
-        game.add_entity("goal", i, i)
+        game.add_entity(i%2==0 and "pumpkin" or "beholder", i, i)
     end
     -- `add_entity` returns a handle to the object,
     -- which can be later used to move it or remove it.
-    player.entity = game.add_entity("player", player.x, player.y)
+    player.entity = game.add_entity("squish1", player.x, player.y)
     -- The area we want to make visible. Due to the aspect ratio of the window,
     -- we will end up seeing more. But this area is guaranteed to be visible.
     game.set_camera_view(0, 0, 10, 10)
