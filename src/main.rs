@@ -1,6 +1,7 @@
 use bevy::asset::LoadState;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::gltf::{Gltf, GltfMesh};
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::view::RenderLayers;
@@ -73,6 +74,7 @@ fn main() {
                 spawn_loaded_bodies,
                 sync_logic_frames,
                 update_camera_view,
+                orbit_camera,
             )
                 .chain(),
         )
@@ -82,16 +84,42 @@ fn main() {
 #[derive(Resource, Default)]
 struct CameraView(Option<(f32, f32, f32, f32)>);
 
+#[derive(Component)]
+struct OrbitCamera {
+    target: Vec3,
+    distance: f32,
+    yaw: f32,
+    pitch: f32,
+}
+
+impl OrbitCamera {
+    fn transform(&self) -> Transform {
+        let rotation = Quat::from_rotation_y(self.yaw) * Quat::from_rotation_x(self.pitch);
+        Transform::from_translation(self.target + rotation * Vec3::Y * self.distance)
+            .looking_at(self.target, rotation * -Vec3::Z)
+    }
+
+    fn drag(&mut self, delta: Vec2) {
+        const RADIANS_PER_PIXEL: f32 = 0.005;
+        self.yaw = (self.yaw - delta.x * RADIANS_PER_PIXEL).rem_euclid(std::f32::consts::TAU);
+        self.pitch = (self.pitch + delta.y * RADIANS_PER_PIXEL).clamp(0.0, std::f32::consts::PI);
+    }
+}
+
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let position = Vec3::new(7.0, 8.0, 9.0);
+    let orbit = OrbitCamera {
+        target: Vec3::ZERO,
+        distance: position.length(),
+        yaw: position.x.atan2(position.z),
+        pitch: (position.y / position.length()).acos(),
+    };
     let camera = commands
-        .spawn((
-            Camera3d::default(),
-            Transform::from_xyz(7.0, 8.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
-        ))
+        .spawn((Camera3d::default(), orbit.transform(), orbit))
         .id();
     if ENABLE_SLIME_SHADER {
         commands.entity(camera).insert(SlimeCamera);
@@ -441,7 +469,7 @@ fn sync_logic_frames(bodies: Res<GameBodies>, mut query: Query<(&LogicFrame, &mu
 fn update_camera_view(
     camera_view: Res<CameraView>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut cameras: Query<(&mut Transform, &Projection), With<Camera3d>>,
+    mut cameras: Query<(&mut Transform, &Projection, &mut OrbitCamera), With<Camera3d>>,
 ) {
     if !camera_view.is_changed() {
         return;
@@ -456,14 +484,153 @@ fn update_camera_view(
         .max(f32::EPSILON);
     let visible_span = height.max(width / aspect);
     let center = Vec3::new(x + width * 0.5, 0.0, y + height * 0.5);
-    for (mut transform, projection) in &mut cameras {
+    for (mut transform, projection, mut orbit) in &mut cameras {
         let distance = match projection {
             Projection::Perspective(perspective) => {
                 visible_span * 0.5 / (perspective.fov * 0.5).tan() * 1.1
             }
             _ => visible_span + 1.0,
         };
-        *transform =
-            Transform::from_translation(center + Vec3::Y * distance).looking_at(center, -Vec3::Z);
+        orbit.target = center;
+        orbit.distance = distance;
+        orbit.yaw = 0.0;
+        orbit.pitch = 0.0;
+        *transform = orbit.transform();
+    }
+}
+
+fn orbit_camera(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+    mut cameras: Query<(&mut Transform, &mut OrbitCamera), With<Camera3d>>,
+) {
+    if !mouse_buttons.pressed(MouseButton::Left) || mouse_motion.delta == Vec2::ZERO {
+        return;
+    }
+    for (mut transform, mut orbit) in &mut cameras {
+        orbit.drag(mouse_motion.delta * Vec2{x: 1.0, y: -1.0});
+        *transform = orbit.transform();
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+
+    fn camera_app() -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.init_resource::<CameraView>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .add_systems(Update, (update_camera_view, orbit_camera).chain());
+        let orbit = OrbitCamera {
+            target: Vec3::new(5.0, 0.0, 5.0),
+            distance: 10.0,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Projection::default(),
+                orbit.transform(),
+                orbit,
+            ))
+            .id();
+        let secondary = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Projection::default(),
+                Transform::IDENTITY,
+            ))
+            .id();
+        (app, camera, secondary)
+    }
+
+    #[test]
+    fn dragging_orbits_only_the_main_camera_and_stops_on_release() {
+        let (mut app, camera, secondary) = camera_app();
+        let initial = *app.world().get::<Transform>(camera).unwrap();
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::new(80.0, 100.0);
+        app.update();
+        assert_eq!(*app.world().get::<Transform>(camera).unwrap(), initial);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        let transform = *app.world().get::<Transform>(camera).unwrap();
+        let orbit = app.world().get::<OrbitCamera>(camera).unwrap();
+        assert_ne!(transform.translation, initial.translation);
+        assert!((transform.translation.distance(orbit.target) - orbit.distance).abs() < 1e-5);
+        assert!(
+            transform
+                .forward()
+                .dot((orbit.target - transform.translation).normalize())
+                > 0.99999
+        );
+        assert_eq!(
+            *app.world().get::<Transform>(secondary).unwrap(),
+            Transform::IDENTITY
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+        assert_eq!(*app.world().get::<Transform>(camera).unwrap(), transform);
+    }
+
+    #[test]
+    fn pitch_limits_remain_finite_at_both_poles() {
+        let (mut app, camera, _) = camera_app();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        for (delta_y, expected_pitch) in [(100_000.0, std::f32::consts::PI), (-100_000.0, 0.0)] {
+            app.world_mut()
+                .resource_mut::<AccumulatedMouseMotion>()
+                .delta = Vec2::new(100.0, delta_y);
+            app.update();
+            let orbit = app.world().get::<OrbitCamera>(camera).unwrap();
+            let transform = app.world().get::<Transform>(camera).unwrap();
+            assert_eq!(orbit.pitch, expected_pitch);
+            assert!(transform.translation.is_finite());
+            assert!(transform.rotation.is_finite());
+            assert!(
+                transform
+                    .forward()
+                    .dot((orbit.target - transform.translation).normalize())
+                    > 0.99999
+            );
+        }
+    }
+
+    #[test]
+    fn script_view_reframes_and_resets_the_orbit_without_moving_secondary_cameras() {
+        let (mut app, camera, secondary) = camera_app();
+        app.world_mut()
+            .get_mut::<OrbitCamera>(camera)
+            .unwrap()
+            .drag(Vec2::splat(100.0));
+        app.world_mut().resource_mut::<CameraView>().0 = Some((2.0, 3.0, 8.0, 6.0));
+        app.update();
+        let orbit = app.world().get::<OrbitCamera>(camera).unwrap();
+        let transform = app.world().get::<Transform>(camera).unwrap();
+        assert_eq!(orbit.target, Vec3::new(6.0, 0.0, 6.0));
+        assert_eq!(orbit.yaw, 0.0);
+        assert_eq!(orbit.pitch, 0.0);
+        assert_eq!(
+            transform.translation,
+            orbit.target + Vec3::Y * orbit.distance
+        );
+        assert_eq!(
+            *app.world().get::<Transform>(secondary).unwrap(),
+            Transform::IDENTITY
+        );
     }
 }

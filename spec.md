@@ -6,6 +6,8 @@ On the logic side, each object has an asset name, a position and a rotation. Not
 
 On the display side, we load the 3D mesh from the `assets` directory according to the asset name and turn it into a [Rapier](https://rapier.rs/docs/user_guides/rust/soft_bodies/) soft body. All primitives of all meshes in the file are loaded, so an asset can be authored from several pieces with different materials.
 
+Hold the left mouse button and drag to orbit the camera around the center of the scene view, keeping its distance fixed. Vertical dragging is limited at the top and bottom poles to avoid flipping the view. Calling `game.set_camera_view` reframes the camera and resets it to the top-down view.
+
 # Physics
 
 All physics is done by Rapier 0.36 (`rapier3d`), held in a single `PhysicsWorld` Bevy resource and stepped in `FixedUpdate`.

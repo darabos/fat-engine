@@ -28,6 +28,7 @@ function _init()
     for i = 3, SIZE-2 do
         game.add_entity(i%2==0 and "pumpkin" or "beholder", i, i)
     end
+    game.add_entity("tree", 5, 3)
     -- `add_entity` returns a handle to the object,
     -- which can be later used to move it or remove it.
     player.entity = game.add_entity("squish1", player.x, player.y)
